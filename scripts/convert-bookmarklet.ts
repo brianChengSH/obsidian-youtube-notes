@@ -1,10 +1,8 @@
 #!/usr/bin/env bun
 
-// Generate with npm run bookmarklet
-
 import { readFileSync } from "fs";
 
-const generateBookmarklet = () => {
+function generateBookmarklet(): void {
 	try {
 		const code = readFileSync("./src/bookmarklet.js", "utf8");
 		const strippedCode = code.split("// --- exports ---")[0];
@@ -14,6 +12,6 @@ const generateBookmarklet = () => {
 	} catch (error) {
 		console.error("Error generating bookmarklet:", error);
 	}
-};
+}
 
 generateBookmarklet();

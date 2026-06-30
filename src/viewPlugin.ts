@@ -2,7 +2,7 @@ import { EditorView, ViewPlugin, ViewUpdate } from "@codemirror/view";
 
 class ClickHandlerPlugin {
 	view: EditorView;
-	handleTimestampClick: (ts: string) => boolean | undefined;
+	handleTimestampClick: (ts: string) => boolean | undefined = () => undefined;
 
 	constructor(view: EditorView) {
 		this.view = view;
@@ -10,7 +10,11 @@ class ClickHandlerPlugin {
 	}
 
 	handleClick = (event: MouseEvent) => {
-		const element = event.target as HTMLElement;
+		if (!(event.target instanceof HTMLElement)) {
+			return;
+		}
+
+		const element = event.target;
 		if (element.matches("span.cm-link, span.cm-link *")) {
 			const textContent = element.textContent;
 			const timestampRegex = /^(\d+:)?[0-5]?\d:[0-5]\d$/;
@@ -22,13 +26,11 @@ class ClickHandlerPlugin {
 					event.stopPropagation();
 				}
 			}
-			// Add your custom logic here
 		}
 	};
 
-	update(update: ViewUpdate) {
-		update.view.dom.addEventListener("click", this.handleClick);
-		// This method is called whenever the view is updated
+	update(_update: ViewUpdate) {
+		// No-op. Listener is registered once in the constructor.
 	}
 
 	destroy() {
