@@ -1,9 +1,10 @@
 import type { TranscriptBlock, TranscriptCue } from "./types";
 import { formatTimestamp, parseTimestamp } from "./utils/time";
-import { stripTranscriptMarkdown } from "./utils/text";
+import { normalizeWhitespace, stripTranscriptMarkdown } from "./utils/text";
 
 const START_MARKER_PREFIX = "<!-- media-notes:transcript:start";
 const END_MARKER = "<!-- media-notes:transcript:end -->";
+export const TRANSCRIPT_CUE_GROUP_SECONDS = 5;
 
 export function serializeTranscriptBlock(
 	videoId: string,
@@ -64,6 +65,34 @@ export function upsertTranscriptBlock(content: string, block: string): string {
 	const before = lines.slice(0, replaceStartLine);
 	const after = lines.slice(existing.endLine + 1);
 	return [...before, ...block.split("\n"), ...after].join("\n").replace(/\s+$/g, "\n");
+}
+
+export function groupTranscriptCues(
+	cues: TranscriptCue[],
+	targetSeconds = TRANSCRIPT_CUE_GROUP_SECONDS
+): TranscriptCue[] {
+	if (cues.length === 0 || targetSeconds <= 0) {
+		return cues;
+	}
+
+	const grouped: TranscriptCue[] = [];
+	let group: TranscriptCue[] = [];
+
+	for (const cue of cues) {
+		const firstCue = group[0];
+		if (firstCue && cue.startSeconds - firstCue.startSeconds >= targetSeconds) {
+			grouped.push(mergeCueGroup(group, grouped.length));
+			group = [];
+		}
+
+		group.push(cue);
+	}
+
+	if (group.length > 0) {
+		grouped.push(mergeCueGroup(group, grouped.length));
+	}
+
+	return grouped;
 }
 
 export function serializeCueLine(sourceUrl: string, cue: TranscriptCue): string {
@@ -135,6 +164,26 @@ function markerAttribute(marker: string, attribute: string): string | null {
 function cueUrlFromLine(line: string): string | null {
 	const match = line.match(/^\s*-\s+\[[^\]]+\]\(([^)]*)\)/);
 	return match ? match[1] : null;
+}
+
+function mergeCueGroup(cues: TranscriptCue[], index: number): TranscriptCue {
+	const firstCue = cues[0];
+	const lastCue = cues[cues.length - 1];
+	const startSeconds = firstCue.startSeconds;
+	const endSeconds = Math.max(
+		startSeconds,
+		lastCue.startSeconds + Math.max(0, lastCue.durationSeconds)
+	);
+	const text = normalizeWhitespace(cues.map((cue) => cue.text).join(" "));
+	const markdownText = normalizeWhitespace(cues.map((cue) => cue.markdownText).join(" "));
+
+	return {
+		id: `cue-${Math.round(startSeconds * 1000)}-${index}`,
+		startSeconds,
+		durationSeconds: endSeconds - startSeconds,
+		text,
+		markdownText,
+	};
 }
 
 function quoteYamlString(value: string): string {

@@ -224,7 +224,12 @@ export default class MediaNotesPlugin extends Plugin {
 
 		const existingId = existingHost?.dataset.playerId;
 		const existingMount = existingId ? this.mounted.get(existingId) : null;
-		if (!force && existingMount && existingMount.mediaLink === mediaLink && existingMount.filePath === file.path) {
+		if (existingId && existingMount && existingMount.mediaLink === mediaLink && existingMount.filePath === file.path) {
+			this.applyLayoutClass(markdownView);
+			if (force) {
+				this.renderMediaNoteRoot(existingMount.root, existingId, markdownView, mediaLink);
+			}
+			existingMount.handle?.resize();
 			return;
 		}
 
@@ -243,14 +248,6 @@ export default class MediaNotesPlugin extends Plugin {
 		sourceView.prepend(host);
 		this.applyLayoutClass(markdownView);
 
-		const mediaId = getYouTubeVideoId(mediaLink) ?? mediaLink;
-		const mediaData = this.settings.mediaData[mediaId] ?? this.settings.mediaData[mediaLink];
-		const normalized = normalizeYouTubeUrl(mediaLink);
-		const initSeconds = Math.round(mediaData?.lastTimestampSeconds ?? normalized?.startSeconds ?? 0);
-		const autoplay = Boolean(normalized?.startSeconds && initSeconds === normalized.startSeconds);
-		const content = markdownView.editor.getValue();
-		const transcriptCues = parseTranscriptBlock(content)?.cues ?? [];
-
 		const root = createRoot(host);
 		this.mounted.set(playerId, {
 			root,
@@ -259,6 +256,23 @@ export default class MediaNotesPlugin extends Plugin {
 			filePath: file.path,
 			handle: null,
 		});
+
+		this.renderMediaNoteRoot(root, playerId, markdownView, mediaLink);
+	}
+
+	private renderMediaNoteRoot(root: Root, playerId: string, markdownView: MarkdownView, mediaLink: string): void {
+		const file = markdownView.file;
+		if (!file) {
+			return;
+		}
+
+		const mediaId = getYouTubeVideoId(mediaLink) ?? mediaLink;
+		const mediaData = this.settings.mediaData[mediaId] ?? this.settings.mediaData[mediaLink];
+		const normalized = normalizeYouTubeUrl(mediaLink);
+		const initSeconds = Math.round(mediaData?.lastTimestampSeconds ?? normalized?.startSeconds ?? 0);
+		const autoplay = Boolean(normalized?.startSeconds && initSeconds === normalized.startSeconds);
+		const content = markdownView.editor.getValue();
+		const transcriptCues = parseTranscriptBlock(content)?.cues ?? [];
 
 		root.render(
 			<MediaNoteApp

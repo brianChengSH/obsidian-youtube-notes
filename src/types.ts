@@ -66,4 +66,5 @@ export interface PlayerHandle {
 	pause(): void;
 	setPlaybackRate(rate: number): void;
 	showAction(action: PlayerAction): void;
+	resize(): void;
 }

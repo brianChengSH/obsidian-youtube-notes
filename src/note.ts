@@ -1,7 +1,7 @@
 import { Editor, getLanguage, MarkdownView, Notice } from "obsidian";
 import { applyTranscriptAnnotation } from "./annotation";
 import { fetchTranscriptForVideo, normalizeYouTubeUrl } from "./youtube";
-import { serializeTranscriptBlock, upsertFrontmatterValues, upsertTranscriptBlock } from "./transcript-block";
+import { groupTranscriptCues, serializeTranscriptBlock, upsertFrontmatterValues, upsertTranscriptBlock } from "./transcript-block";
 import type { AnnotationKind, AnnotationSelection, MediaNotesPluginSettings } from "./types";
 
 export async function createOrUpdateMediaNote(
@@ -30,11 +30,12 @@ export async function createOrUpdateMediaNote(
 
 	try {
 		const { cues, track } = await fetchTranscriptForVideo(normalized.url, languagePreferences);
+		const groupedCues = groupTranscriptCues(cues);
 		const block = serializeTranscriptBlock(
 			normalized.videoId,
 			normalized.url,
 			settings.transcriptHeading,
-			cues
+			groupedCues
 		);
 		editor.setValue(upsertTranscriptBlock(editor.getValue(), block));
 		new Notice(`Transcript added (${track.languageCode}).`);

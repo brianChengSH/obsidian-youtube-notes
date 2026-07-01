@@ -23,6 +23,20 @@ interface OverlayState {
 	visible: boolean;
 }
 
+interface YouTubeInfoDelivery {
+	currentTime?: number;
+	duration?: number;
+	playerState?: number;
+}
+
+interface WindowWithResizeObserver extends Window {
+	ResizeObserver?: typeof ResizeObserver;
+}
+
+const YOUTUBE_PLAYER_STATE_ENDED = 0;
+const YOUTUBE_PLAYER_STATE_PLAYING = 1;
+const YOUTUBE_PLAYER_STATE_PAUSED = 2;
+
 export function MediaNoteApp({
 	playerId,
 	mediaLink,
@@ -37,8 +51,13 @@ export function MediaNoteApp({
 }: MediaNoteAppProps): React.ReactElement | null {
 	const videoId = getYouTubeVideoId(mediaLink);
 	const ytRef = React.useRef<YouTube>(null);
+	const playerRef = React.useRef<YouTubePlayer | null>(null);
+	const playerWindowRef = React.useRef<Window | null>(null);
+	const playerFrameRef = React.useRef<HTMLDivElement>(null);
 	const intervalRef = React.useRef<number | null>(null);
+	const intervalWindowRef = React.useRef<Window | null>(null);
 	const overlayTimerRef = React.useRef<number | null>(null);
+	const overlayTimerWindowRef = React.useRef<Window | null>(null);
 	const transcriptRef = React.useRef<HTMLDivElement>(null);
 	const cueRefs = React.useRef<Map<string, HTMLLIElement>>(new Map());
 	const [duration, setDuration] = React.useState(0);
@@ -51,45 +70,75 @@ export function MediaNoteApp({
 		return findActiveCue(transcriptCues, currentTime);
 	}, [currentTime, transcriptCues]);
 
-	const updateTimestamp = React.useCallback(() => {
-		const player = getInternalPlayer(ytRef);
-		if (!player) {
-			return;
-		}
+	const opts = React.useMemo<YouTubeProps["opts"]>(() => ({
+		playerVars: {
+			start: initSeconds,
+			autoplay: autoplay ? 1 : 0,
+			enablejsapi: 1,
+		},
+	}), []);
 
+	const updateTimestampFromPlayer = React.useCallback((player: YouTubePlayer) => {
 		void player.getCurrentTime().then((time: number) => {
 			if (typeof time === "number") {
 				setCurrentTime(time);
 			}
-		});
+		}).catch(() => undefined);
+		void player.getPlayerState().then((state) => {
+			setIsPlaying(isYouTubePlayingState(state));
+		}).catch(() => undefined);
 	}, []);
+
+	const updateTimestamp = React.useCallback(() => {
+		const player = getCurrentPlayer(playerRef, ytRef);
+		if (player) {
+			updateTimestampFromPlayer(player);
+		}
+	}, [updateTimestampFromPlayer]);
 
 	const stopPolling = React.useCallback(() => {
 		if (intervalRef.current !== null) {
-			window.clearInterval(intervalRef.current);
+			(intervalWindowRef.current ?? getElementWindow(playerFrameRef.current)).clearInterval(intervalRef.current);
 			intervalRef.current = null;
+			intervalWindowRef.current = null;
 		}
 	}, []);
 
 	const startPolling = React.useCallback(() => {
 		stopPolling();
 		updateTimestamp();
-		intervalRef.current = window.setInterval(updateTimestamp, 500);
+		const timerWindow = getElementWindow(playerFrameRef.current);
+		intervalWindowRef.current = timerWindow;
+		intervalRef.current = timerWindow.setInterval(updateTimestamp, 500);
 	}, [stopPolling, updateTimestamp]);
 
 	const showAction = React.useCallback((action: PlayerAction) => {
+		const timerWindow = getElementWindow(playerFrameRef.current);
 		if (overlayTimerRef.current !== null) {
-			window.clearTimeout(overlayTimerRef.current);
+			(overlayTimerWindowRef.current ?? timerWindow).clearTimeout(overlayTimerRef.current);
 		}
 		setOverlay({ action, visible: true });
-		overlayTimerRef.current = window.setTimeout(() => {
+		overlayTimerWindowRef.current = timerWindow;
+		overlayTimerRef.current = timerWindow.setTimeout(() => {
 			setOverlay((current) => (current?.action === action ? { action, visible: false } : current));
 		}, action.type === "setSpeed" ? 800 : 500);
 	}, []);
 
+	const resizePlayer = React.useCallback(() => {
+		const frame = playerFrameRef.current;
+		const player = getCurrentPlayer(playerRef, ytRef);
+		if (!frame || !player) {
+			return;
+		}
+
+		const width = Math.max(1, Math.round(frame.getBoundingClientRect().width));
+		const height = Math.max(1, Math.round(width * 9 / 16));
+		void player.setSize(width, height);
+	}, []);
+
 	const handle = React.useMemo<PlayerHandle>(() => ({
 		async getCurrentTime() {
-			const player = getInternalPlayer(ytRef);
+			const player = getCurrentPlayer(playerRef, ytRef);
 			if (!player) {
 				return null;
 			}
@@ -98,7 +147,7 @@ export function MediaNoteApp({
 			return typeof time === "number" ? time : null;
 		},
 		async getVideoUrl() {
-			const player = getInternalPlayer(ytRef);
+			const player = getCurrentPlayer(playerRef, ytRef);
 			if (!player) {
 				return null;
 			}
@@ -107,7 +156,7 @@ export function MediaNoteApp({
 			return typeof url === "string" ? url : null;
 		},
 		async getPlayerState() {
-			const player = getInternalPlayer(ytRef);
+			const player = getCurrentPlayer(playerRef, ytRef);
 			if (!player) {
 				return null;
 			}
@@ -116,7 +165,7 @@ export function MediaNoteApp({
 			return typeof state === "number" ? state : null;
 		},
 		async getAvailablePlaybackRates() {
-			const player = getInternalPlayer(ytRef);
+			const player = getCurrentPlayer(playerRef, ytRef);
 			if (!player) {
 				return [1];
 			}
@@ -125,7 +174,7 @@ export function MediaNoteApp({
 			return Array.isArray(rates) ? rates.filter((rate): rate is number => typeof rate === "number") : [1];
 		},
 		async getPlaybackRate() {
-			const player = getInternalPlayer(ytRef);
+			const player = getCurrentPlayer(playerRef, ytRef);
 			if (!player) {
 				return null;
 			}
@@ -134,77 +183,159 @@ export function MediaNoteApp({
 			return typeof rate === "number" ? rate : null;
 		},
 		seekTo(seconds: number) {
-			void getInternalPlayer(ytRef)?.seekTo(seconds, true);
+			void getCurrentPlayer(playerRef, ytRef)?.seekTo(seconds, true);
 			setCurrentTime(seconds);
 		},
 		play() {
-			void getInternalPlayer(ytRef)?.playVideo();
+			void getCurrentPlayer(playerRef, ytRef)?.playVideo();
 		},
 		pause() {
-			void getInternalPlayer(ytRef)?.pauseVideo();
+			void getCurrentPlayer(playerRef, ytRef)?.pauseVideo();
 		},
 		setPlaybackRate(rate: number) {
-			void getInternalPlayer(ytRef)?.setPlaybackRate(rate);
+			void getCurrentPlayer(playerRef, ytRef)?.setPlaybackRate(rate);
 		},
 		showAction,
-	}), [showAction]);
+		resize() {
+			resizePlayer();
+		},
+	}), [resizePlayer, showAction]);
 
 	React.useEffect(() => {
+		if (!videoId) {
+			return;
+		}
+
 		onRegisterPlayer(playerId, handle);
-			return () => {
-				stopPolling();
-				if (overlayTimerRef.current !== null) {
-					window.clearTimeout(overlayTimerRef.current);
-				}
-				onUnregisterPlayer(playerId);
-			};
-	}, [handle, onRegisterPlayer, onUnregisterPlayer, playerId, stopPolling]);
+		startPolling();
+		return () => {
+			stopPolling();
+			playerRef.current = null;
+			playerWindowRef.current = null;
+			if (overlayTimerRef.current !== null) {
+				(overlayTimerWindowRef.current ?? getElementWindow(playerFrameRef.current)).clearTimeout(overlayTimerRef.current);
+				overlayTimerRef.current = null;
+				overlayTimerWindowRef.current = null;
+			}
+			onUnregisterPlayer(playerId);
+		};
+	}, [handle, onRegisterPlayer, onUnregisterPlayer, playerId, startPolling, stopPolling, videoId]);
+
+	React.useEffect(() => {
+		const ownerWindow = getElementWindow(playerFrameRef.current);
+		const handleMessage = (event: MessageEvent<unknown>): void => {
+			const playerWindow = playerWindowRef.current;
+			if (playerWindow && event.source !== playerWindow) {
+				return;
+			}
+
+			const info = parseYouTubeInfoDelivery(event.data);
+			if (!info) {
+				return;
+			}
+
+			if (typeof info.currentTime === "number") {
+				setCurrentTime(info.currentTime);
+			}
+			if (typeof info.duration === "number") {
+				setDuration(info.duration);
+			}
+			if (typeof info.playerState === "number") {
+				setIsPlaying(isYouTubePlayingState(info.playerState));
+			}
+		};
+
+		ownerWindow.addEventListener("message", handleMessage);
+		return () => ownerWindow.removeEventListener("message", handleMessage);
+	}, []);
+
+	React.useEffect(() => {
+		const frame = playerFrameRef.current;
+		if (!frame) {
+			return undefined;
+		}
+
+		const ownerWindow = getElementWindow(frame);
+		const ResizeObserverConstructor = getResizeObserverConstructor(ownerWindow);
+		if (!ResizeObserverConstructor) {
+			resizePlayer();
+			return undefined;
+		}
+
+		const observer = new ResizeObserverConstructor(() => {
+			resizePlayer();
+		});
+		observer.observe(frame);
+		resizePlayer();
+
+		return () => observer.disconnect();
+	}, [resizePlayer, videoId]);
 
 	React.useEffect(() => {
 		if (!settings.autoScrollTranscript || !activeCue) {
 			return;
 		}
 
+		const transcriptEl = transcriptRef.current;
 		const cueEl = cueRefs.current.get(activeCue.id);
-		cueEl?.scrollIntoView({ block: "nearest" });
-	}, [activeCue, settings.autoScrollTranscript]);
+		if (transcriptEl && cueEl) {
+			scrollCueIntoTranscript(transcriptEl, cueEl);
+		}
+	}, [activeCue?.id, settings.autoScrollTranscript]);
 
 	if (!videoId) {
 		return null;
 	}
 
-	const opts: YouTubeProps["opts"] = {
-		playerVars: {
-			start: initSeconds,
-			autoplay: autoplay ? 1 : 0,
-		},
-	};
 	return (
 		<div className="media-notes-panel">
 			<div className="media-notes-player-column">
 				<div className="media-notes-player">
-					<YouTube
-						ref={ytRef}
-						className="media-notes-youtube"
-						iframeClassName="media-notes-youtube-iframe"
-						videoId={videoId}
-						opts={opts}
-						onReady={(event: YouTubeEvent) => {
-							void event.target.getDuration().then((nextDuration: number) => {
-								setDuration(nextDuration);
-							});
-						}}
-						onStateChange={(event: YouTubeEvent<number>) => {
-							if (event.data === 1) {
+					<div ref={playerFrameRef} className="media-notes-player-frame">
+						<YouTube
+							ref={ytRef}
+							className="media-notes-youtube"
+							iframeClassName="media-notes-youtube-iframe"
+							videoId={videoId}
+							opts={opts}
+							onReady={(event: YouTubeEvent) => {
+								playerRef.current = event.target;
+								void event.target.getIframe().then((iframe) => {
+									playerWindowRef.current = iframe.contentWindow;
+								}).catch(() => undefined);
+								resizePlayer();
+								updateTimestampFromPlayer(event.target);
+								void event.target.getDuration().then((nextDuration: number) => {
+									setDuration(nextDuration);
+								});
+							}}
+							onPlay={(event: YouTubeEvent<number>) => {
+								playerRef.current = event.target;
 								setIsPlaying(true);
 								startPolling();
-							} else if (event.data === 2 || event.data === 0) {
+								updateTimestampFromPlayer(event.target);
+							}}
+							onPause={(event: YouTubeEvent<number>) => {
+								playerRef.current = event.target;
 								setIsPlaying(false);
-								stopPolling();
-								updateTimestamp();
-							}
-						}}
-					/>
+								updateTimestampFromPlayer(event.target);
+							}}
+							onEnd={(event: YouTubeEvent<number>) => {
+								playerRef.current = event.target;
+								setIsPlaying(false);
+								updateTimestampFromPlayer(event.target);
+							}}
+							onStateChange={(event: YouTubeEvent<number>) => {
+								playerRef.current = event.target;
+								if (isYouTubePlayingState(event.data)) {
+									setIsPlaying(true);
+								} else if (isYouTubePausedState(event.data) || isYouTubeEndedState(event.data)) {
+									setIsPlaying(false);
+								}
+								updateTimestampFromPlayer(event.target);
+							}}
+						/>
+					</div>
 					<PlayerOverlay overlay={overlay} seekSeconds={settings.seekSeconds} />
 					<div className={`media-notes-progress ${settings.displayProgressBar ? "" : "media-notes-hidden"}`}>
 						<div className={`media-notes-current-time ${settings.displayTimestamp || isPlaying ? "" : "media-notes-hidden"}`}>
@@ -369,6 +500,24 @@ function readTranscriptSelection(container: HTMLDivElement | null): AnnotationSe
 	return { cueIds, selectedText };
 }
 
+function scrollCueIntoTranscript(container: HTMLDivElement, cueEl: HTMLLIElement): void {
+	const containerRect = container.getBoundingClientRect();
+	const cueRect = cueEl.getBoundingClientRect();
+	const cueTop = cueRect.top - containerRect.top + container.scrollTop;
+	const cueBottom = cueTop + cueEl.offsetHeight;
+	const visibleTop = container.scrollTop;
+	const visibleBottom = visibleTop + container.clientHeight;
+
+	if (cueTop >= visibleTop && cueBottom <= visibleBottom) {
+		return;
+	}
+
+	container.scrollTo({
+		top: Math.max(0, cueTop - container.clientHeight * 0.35),
+		behavior: "smooth",
+	});
+}
+
 function renderAnnotatedText(markdown: string): React.ReactNode[] {
 	const nodes: React.ReactNode[] = [];
 	let index = 0;
@@ -417,6 +566,62 @@ function renderAnnotatedText(markdown: string): React.ReactNode[] {
 	return nodes;
 }
 
-function getInternalPlayer(ytRef: React.RefObject<YouTube>): YouTubePlayer | null {
-	return ytRef.current?.getInternalPlayer() ?? ytRef.current?.internalPlayer ?? null;
+function getCurrentPlayer(
+	playerRef: React.RefObject<YouTubePlayer | null>,
+	ytRef: React.RefObject<YouTube>
+): YouTubePlayer | null {
+	return playerRef.current ?? ytRef.current?.getInternalPlayer() ?? ytRef.current?.internalPlayer ?? null;
+}
+
+function getElementWindow(element: Element | null): Window {
+	return element?.ownerDocument.defaultView ?? activeWindow;
+}
+
+function getResizeObserverConstructor(ownerWindow: Window): typeof ResizeObserver | null {
+	const resizeObserverWindow = ownerWindow as WindowWithResizeObserver;
+	return resizeObserverWindow.ResizeObserver ?? null;
+}
+
+function parseYouTubeInfoDelivery(data: unknown): YouTubeInfoDelivery | null {
+	const payload = parseMessagePayload(data);
+	if (!isRecord(payload) || payload.event !== "infoDelivery" || !isRecord(payload.info)) {
+		return null;
+	}
+
+	const currentTime = typeof payload.info.currentTime === "number" ? payload.info.currentTime : undefined;
+	const duration = typeof payload.info.duration === "number" ? payload.info.duration : undefined;
+	const playerState = typeof payload.info.playerState === "number" ? payload.info.playerState : undefined;
+	if (currentTime === undefined && duration === undefined && playerState === undefined) {
+		return null;
+	}
+
+	return { currentTime, duration, playerState };
+}
+
+function parseMessagePayload(data: unknown): unknown {
+	if (typeof data !== "string") {
+		return data;
+	}
+
+	try {
+		return JSON.parse(data) as unknown;
+	} catch {
+		return null;
+	}
+}
+
+function isYouTubePlayingState(state: unknown): boolean {
+	return state === YOUTUBE_PLAYER_STATE_PLAYING;
+}
+
+function isYouTubePausedState(state: unknown): boolean {
+	return state === YOUTUBE_PLAYER_STATE_PAUSED;
+}
+
+function isYouTubeEndedState(state: unknown): boolean {
+	return state === YOUTUBE_PLAYER_STATE_ENDED;
+}
+
+function isRecord(value: unknown): value is Record<string, unknown> {
+	return typeof value === "object" && value !== null;
 }
