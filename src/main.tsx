@@ -225,7 +225,7 @@ export default class MediaNotesPlugin extends Plugin {
 		const existingId = existingHost?.dataset.playerId;
 		const existingMount = existingId ? this.mounted.get(existingId) : null;
 		if (existingId && existingMount && existingMount.mediaLink === mediaLink && existingMount.filePath === file.path) {
-			this.applyLayoutClass(markdownView);
+			this.ensureLayoutClass(markdownView);
 			if (force) {
 				this.renderMediaNoteRoot(existingMount.root, existingId, markdownView, mediaLink);
 			}
@@ -298,6 +298,17 @@ export default class MediaNotesPlugin extends Plugin {
 		markdownView.containerEl.addClass(
 			this.settings.defaultSplitMode === "Vertical" ? MEDIA_LAYOUT_VERTICAL_CLASS : MEDIA_LAYOUT_HORIZONTAL_CLASS
 		);
+	}
+
+	private ensureLayoutClass(markdownView: MarkdownView): void {
+		if (
+			markdownView.containerEl.hasClass(MEDIA_LAYOUT_HORIZONTAL_CLASS) ||
+			markdownView.containerEl.hasClass(MEDIA_LAYOUT_VERTICAL_CLASS)
+		) {
+			return;
+		}
+
+		this.applyLayoutClass(markdownView);
 	}
 
 	private async unmountPlayer(playerId: string, saveTimestamp: boolean): Promise<void> {
